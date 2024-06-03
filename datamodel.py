@@ -88,8 +88,9 @@ class TradingState(object):
                  order_depths: Dict[Symbol, OrderDepth],
                  own_trades: Dict[Symbol, List[Trade]],
                  market_trades: Dict[Symbol, List[Trade]],
-                 position: Dict[Product, Position],
-                 observations: Observation):
+                 position: Dict[Product, Position]
+                #  , observations: Observation
+                ):
         self.traderData = traderData
         self.timestamp = timestamp
         self.listings = listings
@@ -97,7 +98,7 @@ class TradingState(object):
         self.own_trades = own_trades
         self.market_trades = market_trades
         self.position = position
-        self.observations = observations
+        # self.observations = observations
         
     def toJSON(self):
         return json.dumps(self, default=lambda o: o.__dict__, sort_keys=True)

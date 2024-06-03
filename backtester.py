@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from trader import Trader
-from datamodel import OrderDepth, UserId, TradingState, Order, Listing
+from datamodel import OrderDepth, UserId, TradingState, Order, Listing, Trade
 from typing import Dict, List
 
 Time = int
@@ -11,6 +11,20 @@ Product = str
 Position = int
 UserId = str
 ObservationValue = int
+
+products = ["STARFRUIT", "AMETHYSTS", "ORCHIDS", 
+            "CHOCOLATE", "STRAWBERRIES", "ROSES", 
+            "GIFT_BASKET", "COCONUT", "COCONUT_COUPON"]
+
+POS_LIM = {"STARFRUIT": 20,
+           "AMETHYSTS": 20,
+           "ORCHIDS": 100,
+           "CHOCOLATE": 250,
+           "STRAWBERRIES": 350,
+           "ROSES": 60,
+           "GIFT_BASKET": 60,
+           "COCONUT": 300,
+           "COCONUT_COUPON": 600}
 
 
 def get_tradehistory(file):
@@ -124,3 +138,164 @@ def get_pnl(mytrades, timestamps, market_price):
         pnls.append(pnl_realised + pnl_unrealised)
     
     return pnls
+
+
+def generate_tradingstate(time, price_current, myorders, position):
+    """
+    Generate a TradingState object at each timestep:
+    1. Iterate over each product available on the market at that timestamp
+    2. Check myorders if algo has placed an order for this product 
+    3. If yes, process the orders of the algo (sort in increasing/decreasing order, merge duplicates etc)
+    4. Observe the position limit
+    5. Match algo orders (mybuyorders/mysellorders) and market orders (listing)
+    6. Process outstanding market orders & update position to put into TradingState
+    * Outstanding algo orders are cancelled at the end of each iteration *
+    """
+
+    listings: Dict[Symbol, Listing] = {}
+    order_depths: Dict[Symbol, OrderDepth] = {}
+    own_trades: Dict[Symbol, List[Trade]] = {}
+    market_trades: Dict[Symbol, List[Trade]] = {}
+
+    for _, listing in price_current.iterrows():
+        prod = listing["product"]
+        
+        listings[prod] = Listing(
+            symbol=prod, product=prod, denomination="SEASHELLS")
+        
+        # process orders placed by self (the algorithm)
+        mybuyorders, mysellorders = {}, {}
+        
+        if prod in myorders.keys():
+            myorders_prod = myorders[prod]
+
+            # check position limit is observed -- otherwise cancel all orders
+            nobuy, nosell = False, False
+            quantities = np.array([order.quantity for order in myorders_prod])
+
+            if quantities[np.where(quantities > 0)[0]].sum() + position[prod] > POS_LIM[prod]:
+                nobuy = True
+                print("Position limit exceeded; cancelling all BUY orders")
+            if quantities[np.where(quantities < 0)[0]].sum() + position[prod] < -POS_LIM[prod]:
+                nosell = True
+                print("Position limit exceeded; cancelling all SELL orders")
+
+            for order in myorders_prod:
+                if order.quantity > 0:
+                    if not nobuy:
+                        if order.price in mybuyorders.keys():
+                            mybuyorders[order.price] += order.quantity
+                        else:
+                            mybuyorders[order.price] = order.quantity
+                else:
+                    if not nosell:
+                        if order.price in mysellorders.keys():
+                            mysellorders[order.price] += order.quantity
+                        else:
+                            mysellorders[order.price] = order.quantity
+            
+            mybuyorders = dict(sorted(mybuyorders.items(), reverse=True))
+            mysellorders = dict(sorted(mysellorders.items()))
+        
+            # process market bid and ask orders
+            buy_o, sell_o = {}, {}
+
+            for i in range(1, 4):
+                bprice = "bid_price_" + str(i)
+                bvol = "bid_volume_" + str(i)
+                if not np.isnan(listing[bprice]):
+                    buy_o[listing[bprice]] = listing[bvol]
+            for i in range(1, 4):
+                aprice = "ask_price_" + str(i)
+                avol = "ask_volume_" + str(i)
+                if not np.isnan(listing[aprice]):
+                    sell_o[listing[aprice]] = -listing[avol]            
+
+            # match orders
+            mytrades = []
+
+            if len(mybuyorders) > 0 and len(sell_o) > 0:
+                myp = list(mybuyorders.keys())[0]  
+                myv = mybuyorders[myp]
+                mkp = list(sell_o.keys())[0]
+                mkv = -sell_o[mkp]
+                
+                while mkp <= myp and len(mybuyorders) > 0 and len(sell_o) > 0:
+                    myp = list(mybuyorders.keys())[0]  
+                    myv = mybuyorders[myp]
+                    mkp = list(sell_o.keys())[0]
+                    mkv = -sell_o[mkp]
+
+                    trade_vol = min(myv, mkv)
+                    trade_price = mkp
+
+                    position[prod] += trade_vol
+
+                    if mybuyorders[myp] - trade_vol == 0:
+                        mybuyorders.pop(myp)
+                    else:
+                        mybuyorders[myp] -= trade_vol
+
+                    if sell_o[mkp] + trade_vol == 0:
+                        sell_o.pop(mkp)
+                    else:
+                        sell_o[mkp] += trade_vol
+
+                    mytrades.append(Trade(
+                        symbol=prod,
+                        price=trade_price,
+                        quantity=trade_vol,
+                        buyer="SUBMISSION",
+                        seller="",
+                        timestamp=time))
+
+            if len(mysellorders) > 0 and len(buy_o) > 0:
+                myp = list(mysellorders.keys())[0]  
+                myv = -mysellorders[myp]
+                mkp = list(buy_o.keys())[0]
+                mkv = buy_o[mkp]
+                
+                while mkp >= myp and len(mysellorders) > 0 and len(buy_o) > 0:
+                    myp = list(mysellorders.keys())[0]  
+                    myv = -mysellorders[myp]
+                    mkp = list(buy_o.keys())[0]
+                    mkv = buy_o[mkp]
+
+                    trade_vol = min(myv, mkv)
+                    trade_price = myp
+
+                    position[prod] -= trade_vol
+
+                    if mysellorders[myp] + trade_vol == 0:
+                        mysellorders.pop(myp)
+                    else:
+                        mysellorders[myp] += trade_vol
+
+                    if buy_o[mkp] - trade_vol == 0:
+                        buy_o.pop(mkp)
+                    else:
+                        buy_o[mkp] -= trade_vol
+
+                    mytrades.append(Trade(
+                        symbol=prod,
+                        price=trade_price,
+                        quantity=trade_vol,
+                        buyer="",
+                        seller="SUBMISSION",
+                        timestamp=time))
+                
+            own_trades[prod] = mytrades
+
+            # send OUTSTANDING market orders to algo
+            order_depths[prod] = OrderDepth(
+                    buy_orders=buy_o, sell_orders=sell_o)
+        
+    return TradingState(
+                 traderData="local",
+                 timestamp=time,
+                 listings=listings,
+                 order_depths=order_depths,
+                 own_trades=own_trades,
+                 market_trades=market_trades,
+                 position=position)
+
