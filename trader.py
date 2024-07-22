@@ -131,7 +131,6 @@ class Trader:
     
 
     def run(self, state: TradingState):
-
         result = {}
 
         for product in state.order_depths:
@@ -146,6 +145,9 @@ class Trader:
                                                   9999, 10001)
                     result[product] = orders
             
+            else:
+                result[product] = []
+            
             # if product == "STARFRUIT":
             #     if len(order_depth.sell_orders) != 0 and \
             #     len(order_depth.buy_orders) != 0:
@@ -158,3 +160,11 @@ class Trader:
         # return result, conversions, traderData
 
         return result
+    
+
+    def run_test(self, state: TradingState, orders, timestamps):
+        # for testing the exchange mechanism with custom orders at corresponding timestamps
+
+        ind = np.where(np.array(timestamps)==state.timestamp)[0][0]
+        
+        return orders[ind]
