@@ -1,3 +1,4 @@
+# author: Karin Nakanishi
 import numpy as np
 from datamodel import OrderDepth, TradingState, Listing, Trade
 from typing import Dict, List
@@ -41,6 +42,7 @@ class Exchange:
                             for p in self.products}
         algo_order_start = {p:[] for p in self.products}
         trades_start = {p:[] for p in self.products}
+        self.trade_hist = {p:[] for p in self.products}
         
         position = {p:0 for p in self.products}
 
@@ -53,6 +55,9 @@ class Exchange:
                         market_trades=trades_start,
                         position=position)
         self.algo_order_start = algo_order_start
+
+        # maybe delete
+        self.state = self.state_start
 
 
     def match(
@@ -98,10 +103,10 @@ class Exchange:
 
                 if quantities[np.where(quantities > 0)[0]].sum() + position[prod] > self.pos_limit[prod]:
                     nobuy = True
-                    print("Position limit exceeded; cancelling all BUY orders")
+                    print("Position limit exceeded; cancelling all BUY orders at time", time)
                 if quantities[np.where(quantities < 0)[0]].sum() + position[prod] < -self.pos_limit[prod]:
                     nosell = True
-                    print("Position limit exceeded; cancelling all SELL orders")
+                    print("Position limit exceeded; cancelling all SELL orders at time", time)
 
                 for order in myorders_prod:
                     if order.quantity > 0:
@@ -215,25 +220,29 @@ class Exchange:
                     if np.random.random() < p:
                         for price in outstanding_buy.keys():
                             if price > midprice:
+                                qty = int(q*outstanding_buy[price]+0.5)
+                                assert qty > 0, "Buy quantity negative!"
                                 mytrades.append(Trade(
                                                     symbol=prod,
                                                     price=price,
-                                                    quantity=int(q*outstanding_buy[price]+0.5),
+                                                    quantity=qty,
                                                     buyer="SUBMISSION",
                                                     seller="",
                                                     timestamp=state_previous.timestamp))
-                                position[prod] += int(q*outstanding_buy[price]+0.5)
+                                position[prod] += qty
                             
                         for price in outstanding_sell.keys():
                             if price < midprice:
+                                qty = int(q*outstanding_sell[price]-0.5)
+                                assert qty < 0, "Sell quantity positive!"
                                 mytrades.append(Trade(
                                                     symbol=prod,
                                                     price=price,
-                                                    quantity=int(-q*outstanding_sell[price]+0.5),
+                                                    quantity=-qty,
                                                     buyer="",
                                                     seller="SUBMISSION",
                                                     timestamp=state_previous.timestamp))
-                                position[prod] += int(-q*outstanding_sell[price]+0.5)
+                                position[prod] += qty
                 
                 mytrades = aggregate_trades(mytrades)
 
@@ -264,7 +273,16 @@ class Exchange:
                     buy_next[key] = buy_o[key]
             order_depths[prod] = OrderDepth(
                     buy_orders=buy_next, sell_orders=sell_next)
-            
+        
+        # maybe delete
+        self.state = TradingState(
+                    traderData="local",
+                    timestamp=time,
+                    listings=listings,
+                    order_depths=order_depths,
+                    own_trades=own_trades,
+                    market_trades=market_trades,
+                    position=position)
 
         return TradingState(
                     traderData="local",
@@ -278,7 +296,8 @@ class Exchange:
 
     def iterate(self, timestamps, prices, trader, 
                 extra_bot_orders="always", p=1., q=1., 
-                verbose=0, testing=(False, [], [])):
+                verbose=0, logging=False,
+                testing=(False, [], [])):
 
         state = self.state_start
         algo_order = self.algo_order_start
@@ -295,6 +314,7 @@ class Exchange:
             # match previous listing with previous algo order
             state = self.match(time, price_now, state, algo_order, 
                                extra_bot_orders=extra_bot_orders, p=p, q=q) 
+            self.state = state
             
             # calculate pnls
             for prod in self.products:
@@ -312,8 +332,6 @@ class Exchange:
                         current_price = price_prev.loc[price_prev["product"]==prod]["mid_price"].item()
                     else:
                         current_price = price_now.loc[price_now["product"]==prod]["mid_price"].item()
-                    
-                    print(current_price)
 
                     for trade in latest_trades:
                         if trade.buyer == "SUBMISSION":
@@ -371,6 +389,13 @@ class Exchange:
                                 state.order_depths[prod].sell_orders, 
                                 ", order depths, buy (", prod, "): ",  
                                 state.order_depths[prod].buy_orders)
+            
+            # log trade history if requested
+            if logging:
+                for prod in self.products:
+                    latest_trades = state.own_trades[prod]
+                    if len(latest_trades) > 0:
+                        self.trade_hist[prod] += latest_trades
         
         for prod in self.products:
             pnls[prod] = pnls[prod][1:]

@@ -1,3 +1,5 @@
+# taken from the Prosperity Wiki
+
 import json
 from typing import Dict, List
 from json import JSONEncoder

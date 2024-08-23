@@ -1,6 +1,10 @@
 from datamodel import OrderDepth, UserId, TradingState, Order
-from typing import List
+from typing import List, Dict
 import numpy as np
+import pandas as pd
+
+Price = int
+Quantity = int
 
 
 class Trader:
@@ -8,35 +12,12 @@ class Trader:
     def __init__(self):
         self.pos_limit = {"AMETHYSTS": 20, "STARFRUIT": 20}
         self.pos = {"AMETHYSTS": 0, "STARFRUIT": 0}
-
-        self.st_hist = [4899, 4899.5, 4898.5, 4900, 4902.5, 4899.5, 
-                        4899.5, 4901, 4898.5, 4901.5, 4901, 4900.5, 
-                        4900, 4899.5, 4901.5, 4898.5, 4903.5, 4900.5, 
-                        4900.5, 4903, 4900.5, 4899.5, 4900, 4903, 4900.5, 
-                        4899.5, 4901, 4901, 4898.5, 4903.5, 4901, 4901,
-       4900.5, 4901.5, 4901. , 4901. , 4899.5, 4900. , 4901. , 4899.5,
-       4900.5, 4902.5, 4900. , 4899. , 4899.5, 4900. , 4899. , 4896.5,
-       4899. , 4899.5, 4899.5, 4899.5, 4899.5, 4899.5, 4899.5, 4899.5,
-       4901.5, 4899. , 4902.5, 4901. , 4900.5, 4900. , 4899. , 4897.5,
-       4899. , 4899.5, 4899.5, 4899.5, 4897. , 4898.5, 4898. , 4901. ,
-       4898.5, 4896.5, 4897.5, 4896.5, 4897.5, 4896.5, 4896.5, 4896.5,
-       4895.5, 4895.5, 4891.5, 4895. , 4894.5, 4892.5, 4895.5, 4898. ,
-       4894.5, 4896. , 4896. , 4895.5, 4896. , 4896. , 4895.5, 4897.5,
-       4895. , 4897. , 4894. , 4896.5, 4896.5, 4896.5, 4896.5, 4897. ,
-       4899.5, 4897. , 4896.5, 4898. , 4897.5, 4897.5, 4901. , 4901.5,
-       4899. , 4898.5, 4899. , 4901. , 4900.5, 4900.5, 4900.5, 4898. ,
-	  4900.5, 4900.5, 4901. , 4900.5, 4901. , 4900.5, 4900.5, 4900. ,
-       4900.5, 4902. , 4902. , 4901. , 4900.5, 4901. , 4901. , 4899.5,
-       4901.5, 4901.5, 4902. , 4901.5, 4901.5, 4898.5, 4902. , 4904. ,
-       4903. , 4902. , 4901.5, 4902.5, 4902.5, 4902.5, 4902.5, 4903. ,
-       4902.5, 4903. , 4903. , 4903.5, 4905. , 4904.5, 4904.5, 4906. ,
-       4905. , 4906. , 4905.5, 4906. , 4906. , 4906. , 4906.5, 4902.5,
-       4905. , 4903. , 4905. , 4905. , 4904.5, 4904.5, 4904.5, 4905.5,
-       4906.5, 4908. , 4908. , 4904.5, 4908. , 4908. , 4908. , 4907.5,
-       4907.5, 4907.5, 4908. , 4909. , 4909.5, 4911. , 4907.5, 4906.5,
-       4907.5, 4907. , 4907. , 4907. , 4906.5, 4906.5, 4908. , 4909. ]
-
-
+        self.st_hist = []
+        self.st_count = 0
+        self.st_open: Dict[Price: Quantity]
+        self.st_open = {}
+        
+    
     def compute_orders_amth(self, order_depth, mybid, myask):
         orders: list[Order] = []
         lim = self.pos_limit["AMETHYSTS"]
@@ -46,92 +27,149 @@ class Trader:
 
         maxsell, maxbuy = len(sellorders), len(buyorders)
 
+        total_long = 0
+        total_short = 0
+        if self.pos["AMETHYSTS"] < 0:
+            total_short += self.pos["AMETHYSTS"]
+        elif self.pos["AMETHYSTS"] > 0:
+            total_long += self.pos["AMETHYSTS"]
+        
         for i in range(min(maxsell, maxbuy)):
             best_ask, best_ask_amount = sellorders[i]
             best_bid, best_bid_amount = buyorders[i]
             
-            if self.pos["AMETHYSTS"] < lim and \
+            if total_long < lim and \
                 best_ask - mybid < 3 and not np.isnan(best_ask):
-                mybuyvol = min(-best_ask_amount, lim-self.pos["AMETHYSTS"])
+                mybuyvol = min(-best_ask_amount, lim-total_long)
                 assert(mybuyvol >= 0), "Buy volume negative"
-                self.pos["AMETHYSTS"] += mybuyvol
+                total_long += mybuyvol
                 orders.append(Order("AMETHYSTS", min(best_ask, mybid), mybuyvol))
 
-            if self.pos["AMETHYSTS"] > -lim and \
+            if total_short > -lim and \
                 myask - best_bid < 3 and not np.isnan(best_bid):
-                mysellvol = min(best_bid_amount, self.pos["AMETHYSTS"]+lim)
+                mysellvol = min(best_bid_amount, total_short+lim)
                 mysellvol *= -1
                 assert(mysellvol <= 0), "Sell volume positive"
-                self.pos["AMETHYSTS"] += mysellvol
+                total_short += mysellvol
                 orders.append(Order("AMETHYSTS", max(best_bid, myask), mysellvol))
 
         for j in range(i, max(maxsell, maxbuy)):
             if maxsell > maxbuy:
                 best_ask, best_ask_amount = sellorders[j]
-                if self.pos["AMETHYSTS"] < lim and \
+                if total_long < lim and \
                     best_ask - mybid < 3 and not np.isnan(best_ask):
-                    mybuyvol = min(-best_ask_amount, lim-self.pos["AMETHYSTS"])
+                    mybuyvol = min(-best_ask_amount, lim-total_long)
                     assert(mybuyvol >= 0), "Buy volume negative"
-                    self.pos["AMETHYSTS"] += mybuyvol
+                    total_long += mybuyvol
                     orders.append(Order("AMETHYSTS", min(best_ask, mybid), mybuyvol))
             elif maxbuy > maxsell:
                 best_bid, best_bid_amount = buyorders[j]
-                if self.pos["AMETHYSTS"] > -lim and myask - best_bid < 3 and not np.isnan(best_bid):
-                    mysellvol = min(best_bid_amount, self.pos["AMETHYSTS"]+lim)
+                if total_short > -lim and myask - best_bid < 3 and not np.isnan(best_bid):
+                    mysellvol = min(best_bid_amount, total_short+lim)
                     mysellvol *= -1
                     assert(mysellvol <= 0), "Sell volume positive"
-                    self.pos["AMETHYSTS"] += mysellvol
+                    total_short += mysellvol
                     orders.append(Order("AMETHYSTS", max(best_bid, myask), mysellvol))
 
         return orders
 
 
-    def compute_order_st(self, order_depth):
+    def compute_order_st(self, state):
         orders: list[Order] = []
-        lim = self.pos_limit["STARFRUIT"]
 
+        order_depth = state.order_depths["STARFRUIT"]
+        latest_trade = state.own_trades["STARFRUIT"]
+
+        threshold = 0.5
+        hits = 2
+        mult = 2.5
+        tolerance = -5  # maximum allowable loss in a trade
+        maxbuy = 5
+
+        # track open positions
+        sold_last = {}
+        for trade in latest_trade:
+            if len(trade.buyer) > 1:
+                if trade.price in self.st_open.keys():
+                    self.st_open[trade.price] += trade.quantity
+                else:
+                    self.st_open[trade.price] = trade.quantity
+                self.st_open = dict(sorted(self.st_open.items()))
+            elif len(trade.seller) > 1:
+                sold_last[trade.price] = trade.quantity
+
+        # this works because you can only be long, but not short
+        for soldprice in sold_last.keys():
+            while sold_last[soldprice] != 0:
+                topop = []
+                for buyprice in self.st_open.keys():
+                    if soldprice - buyprice > tolerance:
+                        closed_qt = min(sold_last[soldprice], self.st_open[buyprice])
+                        self.st_open[buyprice] -= closed_qt
+                        sold_last[soldprice] -= closed_qt
+                        if self.st_open[buyprice] == 0:
+                            topop.append(buyprice)
+                        
+                for popped in topop:             
+                    self.st_open.pop(popped)
+        
+        # sanity check: position
+        assert sum(self.st_open.values()) == self.pos["STARFRUIT"], \
+        "Open positions incorrectly tracked"
+        
         sellorders = sorted(list(order_depth.sell_orders.items()))
         buyorders = sorted(list(order_depth.buy_orders.items()), reverse=True)
 
         best_ask, best_ask_amount = sellorders[0]
-        best_bid, best_bid_amount = buyorders[0]
+        best_bid, _ = buyorders[0]
 
-        cp = (best_ask + best_bid) / 2
-        self.st_hist.append(cp)
-        self.st_hist = self.st_hist[1:]
-        assert len(self.st_hist) == 200, "Incorrect historical data length"
-        
-        # SMA strategy -- alternatively use EMA
-        shorter_below = False
-        sma200 = np.mean(np.array(self.st_hist)[-50:])
-        sma50 = np.mean(np.array(self.st_hist)[-20:])
-        sma20 = np.mean(np.array(self.st_hist)[-5:])
+        # assumption: midprice is available at every timestep
+        mp = (best_ask + best_bid) / 2
+        self.st_hist.append(mp)
 
-        shorter_below = False
-        if sma50 > sma20:
-            if not shorter_below and cp < sma200 and \
-               sma20 < 200 and sma50 < 200 and self.pos["STARFRUIT"] > -lim:
-                mysellvol = min(best_bid_amount, self.pos["STARFRUIT"]+lim)
-                mysellvol *= -1
-                assert(mysellvol <= 0), "Sell volume positive"
-                self.pos["STARFRUIT"] += mysellvol
-                orders.append(Order("STARFRUIT", best_bid, mysellvol))
-            shorter_below = True
+        if len(self.st_hist) == 20:
+            # sma_delayed = np.mean(np.array(self.st_hist)[-100:])
+            sma20 = np.mean(np.array(self.st_hist)[-20:])
+            upper = sma20 + mult * np.std(np.array(self.st_hist)[-20:])
+            lower = sma20 - mult * np.std(np.array(self.st_hist)[-20:])
+            
+            # try to sell if long
+            if self.pos["STARFRUIT"] > 0:
+                if mp >= upper:
+                    self.st_count += 1
 
-        elif sma50 < sma20 :
-            if shorter_below and cp > sma200 and \
-                sma20 > 200 and sma50 > 200 and self.pos["STARFRUIT"] < lim:
-                mybuyvol = min(-best_ask_amount, lim-self.pos["STARFRUIT"])
-                assert(mybuyvol >= 0), "Buy volume negative"
-                self.pos["STARFRUIT"] += mybuyvol
-                orders.append(Order("STARFRUIT", best_ask, mybuyvol))
-            shorter_below = False
+                boughtprices = np.array(list(self.st_open.keys()))
+                
+                if self.st_count >= hits and \
+                    np.any(best_bid - boughtprices > tolerance):
+                    where = np.where(best_bid - boughtprices > tolerance)[0]
+                    qty = 0
+                    for w in where:
+                        qty += self.st_open[boughtprices[w]]
+                    orders.append(Order("STARFRUIT", best_bid, -qty))
+            
+            # only buy when short
+            if self.pos["STARFRUIT"] <= 0:
+                # reset count when exiting long position
+                self.st_count = 0
+            
+            # uncomment this if also buying as long as below the position limit
+            # if self.pos["STARFRUIT"] < self.pos_limit["STARFRUIT"]:
+                # if np.abs(sma_delayed - lower) < threshold:
+                if np.abs(mp - lower) < threshold:
+                    buy_vol = min(-best_ask_amount,
+                                  maxbuy,
+                                  self.pos_limit["STARFRUIT"]-self.pos["STARFRUIT"])
+                    orders.append(Order("STARFRUIT", best_ask, buy_vol))
+
+            self.st_hist = self.st_hist[1:]
 
         return orders
     
 
     def run(self, state: TradingState):
         result = {}
+        self.pos = state.position
 
         for product in state.order_depths:
             order_depth: OrderDepth = state.order_depths[product]
@@ -144,16 +182,17 @@ class Trader:
                     orders = self.compute_orders_amth(order_depth, 
                                                   9999, 10001)
                     result[product] = orders
+                # result[product] = []
+            
+            elif product == "STARFRUIT":
+                if len(order_depth.sell_orders) != 0 and \
+                len(order_depth.buy_orders) != 0:
+                    
+                    orders = self.compute_order_st(state)
+                    result[product] = orders
             
             else:
                 result[product] = []
-            
-            # if product == "STARFRUIT":
-            #     if len(order_depth.sell_orders) != 0 and \
-            #     len(order_depth.buy_orders) != 0:
-                    
-            #         orders = self.compute_order_st(order_depth)
-            #         result[product] = orders
                 
         # traderData = "SAMPLE"
         # conversions = 1
