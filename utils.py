@@ -152,3 +152,18 @@ def aggregate_trades(trades):
     return buys + sells
 
 
+def get_midprice_mm(df1):
+    """
+    Extract the true midprice based on a market maker placing larger orders on both sides (e.g. KELP)
+    """
+    fp = []
+    for _, df in df1.iterrows():
+        bid_vol = list(df[["bid_volume_1", "bid_volume_2", "bid_volume_3"]])
+        where = np.nanargmax(bid_vol)
+        bid = list(df[["bid_price_1", "bid_price_2", "bid_price_3"]])[where]
+        ask_vol = list(df[["ask_volume_1", "ask_volume_2", "ask_volume_3"]])
+        where = np.nanargmax(ask_vol)
+        ask = list(df[["ask_price_1", "ask_price_2", "ask_price_3"]])[where]
+        fp.append((bid+ask)/2)
+    
+    return np.array(fp)

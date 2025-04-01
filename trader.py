@@ -1,209 +1,271 @@
 from datamodel import OrderDepth, UserId, TradingState, Order
-from typing import List, Dict
+from typing import List
+import string
 import numpy as np
-import pandas as pd
-
-Price = int
-Quantity = int
 
 
 class Trader:
-
     def __init__(self):
-        self.pos_limit = {"AMETHYSTS": 20, "STARFRUIT": 20}
-        self.pos = {"AMETHYSTS": 0, "STARFRUIT": 0}
-        self.st_hist = []
-        self.st_count = 0
-        self.st_open: Dict[Price: Quantity]
-        self.st_open = {}
-        
-    
-    def compute_orders_amth(self, order_depth, mybid, myask):
-        orders: list[Order] = []
-        lim = self.pos_limit["AMETHYSTS"]
+        self.POS_LIM = {"AMETHYSTS": 20, "STARFRUIT": 20}
+        self.prods = ["AMETHYSTS", "STARFRUIT"]
+        self.open_buys = {prod: {} for prod in self.prods}
+        self.open_sells = {prod: {} for prod in self.prods}
+        self.recorded_time = -1     # last recorded time of own_trades
 
+
+    def update_open_pos(self, state: TradingState):
+        """
+        Update open positions according to updated own trades
+        Later try to buy/sell lower/higher than open trades
+        """
+
+        for prod in state.own_trades:
+            sold_price = sorted(list(self.open_sells[prod].keys()), reverse=True)
+            trades = state.own_trades[prod]
+
+            if trades[0].timestamp > self.recorded_time:
+                for trade in trades:
+                    remaining_quantity = trade.quantity
+                    if trade.buyer == "SUBMISSION":
+                        # match with currently open positions
+                        for price in sold_price:  
+                            if trade.price >= price: 
+                                break  
+                            if remaining_quantity <= 0:
+                                break  
+                            
+                            if price in self.open_sells[prod]:
+                                available_quantity = self.open_sells[prod][price]
+                                if remaining_quantity >= available_quantity:  
+                                    remaining_quantity -= available_quantity  
+                                    del self.open_sells[prod][price]  
+                                else:  
+                                    self.open_sells[prod][price] -= remaining_quantity  
+                                    remaining_quantity = 0
+                            else:
+                                continue
+                        if remaining_quantity > 0:
+                            if trade.price in self.open_buys[prod]:
+                                self.open_buys[prod][trade.price] += remaining_quantity
+                            else:
+                                self.open_buys[prod][trade.price] = remaining_quantity
+                            
+                            
+                    else:
+                        bought_price = sorted(list(self.open_sells[prod].keys()))
+                        for price in bought_price:  
+                            if trade.price <= price: 
+                                break  
+                            if remaining_quantity <= 0:
+                                break 
+
+                            if price in self.open_buys[prod]:
+                                available_quantity = self.open_buys[prod][price]
+                                if remaining_quantity >= available_quantity:  
+                                    remaining_quantity -= available_quantity  
+                                    del self.open_buys[prod][price]  
+                                else:  
+                                    self.open_buys[prod][price] -= remaining_quantity  
+                                    remaining_quantity = 0
+                            else:
+                                continue
+                        if remaining_quantity > 0:
+                            if trade.price in self.open_sells[prod]:
+                                self.open_sells[prod][trade.price] += remaining_quantity
+                            else:
+                                self.open_sells[prod][trade.price] = remaining_quantity
+                    self.recorded_time = trade.timestamp
+            
+            # sanity check: position
+            if prod in state.position:
+                if sum(self.open_buys[prod].values()) - sum(self.open_sells[prod].values()) != state.position[prod]:
+                    print("Open positions incorrectly tracked!")
+                # assert sum(self.open_buys[prod].values()) - sum(self.open_sells[prod].values()) == state.position[prod],\
+                # "Open positions incorrectly tracked!"
+            else:
+                if self.open_buys or self.open_sells:
+                    if sum(self.open_buys[prod].values()) - sum(self.open_sells[prod].values()) != 0:
+                        print("Open positions incorrectly tracked!")
+                    # assert sum(self.open_buys[prod].values()) - sum(self.open_sells[prod].values()) == 0, \
+                    # "Open positions incorrectly tracked!"
+
+
+    def order_am(self, state: TradingState):
+        orders: list[Order] = []
+        prod = "AMETHYSTS"
+        # free parameters
+        fairprice = 10000
+        make_bid = fairprice - 2
+        make_ask = fairprice + 2
+        atol = 1
+        param1 = 0.75
+        # end of parameters
+
+        # track long and short separately to prevent cancelling out
+        current_short, current_long = 0, 0
+        if prod in state.position:
+            current_pos = state.position[prod]
+            if current_pos > 0:
+                current_long += current_pos
+            else:
+                current_short += current_pos
+
+        pos_lim = self.POS_LIM[prod]
+        order_depth = state.order_depths[prod]
         sellorders = sorted(list(order_depth.sell_orders.items()))
         buyorders = sorted(list(order_depth.buy_orders.items()), reverse=True)
-
-        maxsell, maxbuy = len(sellorders), len(buyorders)
-
-        total_long = 0
-        total_short = 0
-        if self.pos["AMETHYSTS"] < 0:
-            total_short += self.pos["AMETHYSTS"]
-        elif self.pos["AMETHYSTS"] > 0:
-            total_long += self.pos["AMETHYSTS"]
         
-        for i in range(min(maxsell, maxbuy)):
-            best_ask, best_ask_amount = sellorders[i]
-            best_bid, best_bid_amount = buyorders[i]
-            
-            if total_long < lim and \
-                best_ask - mybid < 3 and not np.isnan(best_ask):
-                mybuyvol = min(-best_ask_amount, lim-total_long)
-                assert(mybuyvol >= 0), "Buy volume negative"
-                total_long += mybuyvol
-                orders.append(Order("AMETHYSTS", min(best_ask, mybid), mybuyvol))
+        # market taking
+        for sellorder in sellorders:
+            ask, ask_amount = sellorder
 
-            if total_short > -lim and \
-                myask - best_bid < 3 and not np.isnan(best_bid):
-                mysellvol = min(best_bid_amount, total_short+lim)
-                mysellvol *= -1
-                assert(mysellvol <= 0), "Sell volume positive"
-                total_short += mysellvol
-                orders.append(Order("AMETHYSTS", max(best_bid, myask), mysellvol))
-
-        for j in range(i, max(maxsell, maxbuy)):
-            if maxsell > maxbuy:
-                best_ask, best_ask_amount = sellorders[j]
-                if total_long < lim and \
-                    best_ask - mybid < 3 and not np.isnan(best_ask):
-                    mybuyvol = min(-best_ask_amount, lim-total_long)
+            if current_long < pos_lim:
+                if ask <= fairprice + atol:
+                    mybuyvol = min(-ask_amount, pos_lim-current_long)
                     assert(mybuyvol >= 0), "Buy volume negative"
-                    total_long += mybuyvol
-                    orders.append(Order("AMETHYSTS", min(best_ask, mybid), mybuyvol))
-            elif maxbuy > maxsell:
-                best_bid, best_bid_amount = buyorders[j]
-                if total_short > -lim and myask - best_bid < 3 and not np.isnan(best_bid):
-                    mysellvol = min(best_bid_amount, total_short+lim)
+                    orders.append(Order(prod, ask, mybuyvol))
+                    current_long += mybuyvol
+                else:
+                    # if price is higher than the fp, can still buy if it's lower than the current open sells
+                    price_list = sorted(list(self.open_sells[prod].keys()))
+                    for price in price_list:
+                        if ask < price:
+                            mybuyvol = min(ask_amount, self.open_sells[prod][price],
+                                            pos_lim-current_long)
+                            assert(mybuyvol >= 0), "Buy volume negative"
+                            orders.append(Order(prod, ask, mybuyvol))
+                            current_long += mybuyvol
+
+        for buyorder in buyorders:
+            bid, bid_amount = buyorder
+
+            if current_short > -pos_lim:
+                if bid >= fairprice - atol:
+                    mysellvol = min(bid_amount, pos_lim+current_short)
                     mysellvol *= -1
                     assert(mysellvol <= 0), "Sell volume positive"
-                    total_short += mysellvol
-                    orders.append(Order("AMETHYSTS", max(best_bid, myask), mysellvol))
+                    orders.append(Order(prod, bid, mysellvol))
+                    current_short += mysellvol
+                else:
+                    price_list = sorted(list(self.open_buys[prod].keys()), reverse=True)
+                    for price in price_list:
+                        if bid > price:
+                            mysellvol = min(bid_amount, self.open_buys[prod][price],
+                                            pos_lim+current_short)
+                            assert(mysellvol <= 0), "Sell volume positive"
+                            orders.append(Order(prod, bid, mysellvol))
+                            current_short += mysellvol
+
+        # market making: fill the remaining orders up to position limit
+        if current_long < pos_lim:
+            qty1 = int((pos_lim - current_long) * param1)
+            qty2 = pos_lim - current_long - qty1
+            orders.append(Order(prod, make_bid, qty1))
+            orders.append(Order(prod, make_bid-1, qty2))   # try to buy even lower
+        if current_short > -pos_lim:
+            qty1 = int((pos_lim + current_short) * param1)
+            qty2 = pos_lim + current_short - qty1
+            orders.append(Order(prod, make_ask, -qty1))
+            orders.append(Order(prod, make_ask+1, -qty2))   # try to sell even higher
 
         return orders
 
 
-    def compute_order_st(self, state):
+    def order_st(self, state: TradingState):
         orders: list[Order] = []
+        prod = "STARFRUIT"
+        order_depth = state.order_depths[prod]
+        # calculate fairprice based on market-making bots
+        fairprice = (max(order_depth.sell_orders, key=order_depth.sell_orders.get) 
+              + max(order_depth.buy_orders, key=order_depth.buy_orders.get)) / 2
+        # self.kelp_hist.append(fairprice)
 
-        order_depth = state.order_depths["STARFRUIT"]
-        latest_trade = state.own_trades["STARFRUIT"]
+        # free parameters
+        pos_lim = self.POS_LIM[prod]
+        atol = 1
+        param1 = 0.75
+        make_bid = fairprice - 2
+        make_ask = fairprice + 2
+        # end of parameters
 
-        threshold = 0.5
-        hits = 2
-        mult = 2.5
-        tolerance = -5  # maximum allowable loss in a trade
-        maxbuy = 5
-
-        # track open positions
-        sold_last = {}
-        for trade in latest_trade:
-            if len(trade.buyer) > 1:
-                if trade.price in self.st_open.keys():
-                    self.st_open[trade.price] += trade.quantity
-                else:
-                    self.st_open[trade.price] = trade.quantity
-                self.st_open = dict(sorted(self.st_open.items()))
-            elif len(trade.seller) > 1:
-                sold_last[trade.price] = trade.quantity
-
-        # this works because you can only be long, but not short
-        for soldprice in sold_last.keys():
-            while sold_last[soldprice] != 0:
-                topop = []
-                for buyprice in self.st_open.keys():
-                    if soldprice - buyprice > tolerance:
-                        closed_qt = min(sold_last[soldprice], self.st_open[buyprice])
-                        self.st_open[buyprice] -= closed_qt
-                        sold_last[soldprice] -= closed_qt
-                        if self.st_open[buyprice] == 0:
-                            topop.append(buyprice)
-                        
-                for popped in topop:             
-                    self.st_open.pop(popped)
-        
-        # sanity check: position
-        assert sum(self.st_open.values()) == self.pos["STARFRUIT"], \
-        "Open positions incorrectly tracked"
+        # track long and short separately to prevent cancelling out
+        current_short, current_long = 0, 0
+        if prod in state.position:
+            current_pos = state.position[prod]
+            if current_pos > 0:
+                current_long += current_pos
+            else:
+                current_short += current_pos
         
         sellorders = sorted(list(order_depth.sell_orders.items()))
         buyorders = sorted(list(order_depth.buy_orders.items()), reverse=True)
+        
+        # market taking
+        for sellorder in sellorders:
+            ask, ask_amount = sellorder
 
-        best_ask, best_ask_amount = sellorders[0]
-        best_bid, _ = buyorders[0]
+            if current_long < pos_lim:
+                if ask <= fairprice + atol:
+                    mybuyvol = min(-ask_amount, pos_lim-current_long)
+                    assert(mybuyvol >= 0), "Buy volume negative"
+                    orders.append(Order(prod, ask, mybuyvol))
+                    current_long += mybuyvol
+                else:
+                    # close open positions: buy if it's lower than the current open sells
+                    price_list = sorted(list(self.open_sells[prod].keys()))
+                    for price in price_list:
+                        if ask < price:
+                            mybuyvol = min(ask_amount, self.open_sells[prod][price],
+                                            pos_lim-current_long)
+                            assert(mybuyvol >= 0), "Buy volume negative"
+                            orders.append(Order(prod, ask, mybuyvol))
+                            current_long += mybuyvol
 
-        # assumption: midprice is available at every timestep
-        mp = (best_ask + best_bid) / 2
-        self.st_hist.append(mp)
+        for buyorder in buyorders:
+            bid, bid_amount = buyorder
 
-        if len(self.st_hist) == 20:
-            # sma_delayed = np.mean(np.array(self.st_hist)[-100:])
-            sma20 = np.mean(np.array(self.st_hist)[-20:])
-            upper = sma20 + mult * np.std(np.array(self.st_hist)[-20:])
-            lower = sma20 - mult * np.std(np.array(self.st_hist)[-20:])
-            
-            # try to sell if long
-            if self.pos["STARFRUIT"] > 0:
-                if mp >= upper:
-                    self.st_count += 1
+            if current_short > -pos_lim:
+                if bid >= fairprice - atol:
+                    mysellvol = min(bid_amount, pos_lim+current_short)
+                    mysellvol *= -1
+                    assert(mysellvol <= 0), "Sell volume positive"
+                    orders.append(Order(prod, bid, mysellvol))
+                    current_short += mysellvol
+                else:
+                    price_list = sorted(list(self.open_buys[prod].keys()), reverse=True)
+                    for price in price_list:
+                        if bid > price:
+                            mysellvol = min(bid_amount, self.open_buys[prod][price],
+                                            pos_lim+current_short)
+                            assert(mysellvol <= 0), "Sell volume positive"
+                            orders.append(Order(prod, bid, mysellvol))
+                            current_short += mysellvol
 
-                boughtprices = np.array(list(self.st_open.keys()))
-                
-                if self.st_count >= hits and \
-                    np.any(best_bid - boughtprices > tolerance):
-                    where = np.where(best_bid - boughtprices > tolerance)[0]
-                    qty = 0
-                    for w in where:
-                        qty += self.st_open[boughtprices[w]]
-                    orders.append(Order("STARFRUIT", best_bid, -qty))
-            
-            # only buy when short
-            if self.pos["STARFRUIT"] <= 0:
-                # reset count when exiting long position
-                self.st_count = 0
-            
-            # uncomment this if also buying as long as below the position limit
-            # if self.pos["STARFRUIT"] < self.pos_limit["STARFRUIT"]:
-                # if np.abs(sma_delayed - lower) < threshold:
-                if np.abs(mp - lower) < threshold:
-                    buy_vol = min(-best_ask_amount,
-                                  maxbuy,
-                                  self.pos_limit["STARFRUIT"]-self.pos["STARFRUIT"])
-                    orders.append(Order("STARFRUIT", best_ask, buy_vol))
+        # market making: fill the remaining orders up to position limit
+        if current_long < pos_lim:
+            qty1 = int((pos_lim - current_long) * param1)
+            qty2 = pos_lim - current_long - qty1
+            orders.append(Order(prod, make_bid, qty1))
+            orders.append(Order(prod, make_bid-1, qty2))   # try to buy even lower
+        if current_short > -pos_lim:
+            qty1 = int((pos_lim + current_short) * param1)
+            qty2 = pos_lim + current_short - qty1
+            orders.append(Order(prod, make_ask, -qty1))
+            orders.append(Order(prod, make_ask+1, -qty2))   # try to sell even higher
 
-            self.st_hist = self.st_hist[1:]
+            # self.kelp_hist = self.kelp_hist[1:]
 
         return orders
-    
+
 
     def run(self, state: TradingState):
         result = {}
-        self.pos = state.position
 
-        for product in state.order_depths:
-            order_depth: OrderDepth = state.order_depths[product]
-            orders: List[Order] = []
+        self.update_open_pos(state)
+        result["AMETHYSTS"] = self.order_resin(state)
+        result["STARFRUIT"] = self.order_kelp(state)
 
-            if product == "AMETHYSTS":
-                if len(order_depth.sell_orders) != 0 and \
-                len(order_depth.buy_orders) != 0:
-                    
-                    orders = self.compute_orders_amth(order_depth, 
-                                                  9999, 10001)
-                    result[product] = orders
-                # result[product] = []
-            
-            elif product == "STARFRUIT":
-                if len(order_depth.sell_orders) != 0 and \
-                len(order_depth.buy_orders) != 0:
-                    
-                    orders = self.compute_order_st(state)
-                    result[product] = orders
-            
-            else:
-                result[product] = []
-                
-        # traderData = "SAMPLE"
-        # conversions = 1
-        # return result, conversions, traderData
-
-        return result
-    
-
-    def run_test(self, state: TradingState, orders, timestamps):
-        # for testing the exchange mechanism with custom orders at corresponding timestamps
-
-        ind = np.where(np.array(timestamps)==state.timestamp)[0][0]
+        traderData = "SAMPLE"
         
-        return orders[ind]
+        conversions = 1
+        return result, conversions, traderData
