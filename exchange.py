@@ -8,18 +8,14 @@ np.random.seed(42)
 
 Symbol = str
 
-# Time = int
-# Product = str
-# Position = int
-# UserId = str
-# ObservationValue = int
+# PRODUCTS = ["STARFRUIT", "AMETHYSTS", "ORCHIDS", 
+#             "CHOCOLATE", "STRAWBERRIES", "ROSES", 
+#             "GIFT_BASKET", "COCONUT", "COCONUT_COUPON"]
 
-PRODUCTS = ["STARFRUIT", "AMETHYSTS", "ORCHIDS", 
-            "CHOCOLATE", "STRAWBERRIES", "ROSES", 
-            "GIFT_BASKET", "COCONUT", "COCONUT_COUPON"]
+PRODUCTS = ["RAINFOREST_RESIN", "KELP"]
 
-POS_LIM = {"STARFRUIT": 20,
-        "AMETHYSTS": 20,
+POS_LIM = {PRODUCTS[0]: 50,
+        PRODUCTS[1]: 50,
         "ORCHIDS": 100,
         "CHOCOLATE": 250,
         "STRAWBERRIES": 350,
@@ -35,6 +31,11 @@ class Exchange:
         self.products = PRODUCTS
         self.pos_limit = POS_LIM
 
+        self.open_buy_all = {p:[] for p in self.products}
+        self.open_sell_all = {p:[] for p in self.products}
+        self.pnl_realised = {p:0 for p in self.products}
+        self.pnl_total = {p:[0.] for p in self.products}
+
         listings = {prod:Listing(
                         symbol=prod, product=prod, denomination="SEASHELLS")
                     for prod in self.products}
@@ -43,12 +44,11 @@ class Exchange:
         algo_order_start = {p:[] for p in self.products}
         trades_start = {p:[] for p in self.products}
         self.trade_hist = {p:[] for p in self.products}
-        
         position = {p:0 for p in self.products}
 
         self.state_start = TradingState(
                         traderData="local",
-                        timestamp=0,
+                        timestamp=-1,
                         listings=listings,
                         order_depths=order_depth_start,
                         own_trades=trades_start,
@@ -85,11 +85,6 @@ class Exchange:
             # take directly from previous trading state - this is what the Trader saw to send his orders
             sell_o = state_previous.order_depths[prod].sell_orders
             buy_o = state_previous.order_depths[prod].buy_orders
-
-            if len(list(sell_o.keys())) > 0 and len(list(buy_o.keys())) > 0:
-                midprice = (min(list(sell_o.keys())) + max(list(buy_o.keys()))) / 2
-            else:
-                midprice = 0
             
             # process orders placed by self (the algorithm)
             mybuyorders, mysellorders = {}, {}
@@ -124,7 +119,7 @@ class Exchange:
                 
                 mybuyorders = dict(sorted(mybuyorders.items()))
                 mysellorders = dict(sorted(mysellorders.items(), reverse=True))
-            
+
                 # match orders
                 for i in range(len(mybuyorders)):
                     myp, myv = list(mybuyorders.items())[i]
@@ -133,6 +128,9 @@ class Exchange:
 
                     while myv > 0 and len(matchedprice) > 0:
                         trade_vol = min(myv, -sell_o[matchedprice[0]])
+                        assert trade_vol > 0, "Trade volume negative"
+                        
+                        # print("BUY VOL", trade_vol)
 
                         mytrades.append(Trade(
                                             symbol=prod,
@@ -170,6 +168,8 @@ class Exchange:
                         trade_vol = min(-myv, buy_o[matchedprice[0]])
                         assert trade_vol > 0, "Trade volume negative"
 
+                        # print("SELL VOL", trade_vol)
+
                         mytrades.append(Trade(
                                             symbol=prod,
                                             price=matchedprice[0],
@@ -195,6 +195,7 @@ class Exchange:
                 outstanding_sell = mysellorders
 
                 # deal with the outstanding algo orders
+                # compare against current orderbook sell_o and buy_o
                 if extra_bot_orders == "always":
                     for price in outstanding_buy.keys():
                         mytrades.append(Trade(
@@ -217,32 +218,69 @@ class Exchange:
                         position[prod] += outstanding_sell[price]
 
                 elif extra_bot_orders == "probabilistic":
-                    if np.random.random() < p:
-                        for price in outstanding_buy.keys():
-                            if price > midprice:
-                                qty = int(q*outstanding_buy[price]+0.5)
-                                assert qty > 0, "Buy quantity negative!"
-                                mytrades.append(Trade(
-                                                    symbol=prod,
-                                                    price=price,
-                                                    quantity=qty,
-                                                    buyer="SUBMISSION",
-                                                    seller="",
-                                                    timestamp=state_previous.timestamp))
-                                position[prod] += qty
-                            
+                    # the probability of execution should scale with the rank of algo bid vs other bids in orderbook
+                    # penalise the probability of execution proportionally to rank
+                    for price in outstanding_buy.keys():
+                        market_buyo = list(buy_o.keys())
+                        rank = len([x for x in market_buyo if x > price])
+                        if rank == 0:
+                            if np.random.random() < p:
+                                qty = round(q*outstanding_buy[price])
+                                assert qty >= 0, "Buy quantity negative!"
+                                if qty > 0:
+                                    mytrades.append(Trade(
+                                                        symbol=prod,
+                                                        price=price,
+                                                        quantity=qty,
+                                                        buyer="SUBMISSION",
+                                                        seller="",
+                                                        timestamp=state_previous.timestamp))
+                                    position[prod] += qty
+                        else:
+                            penalty = rank / len(market_buyo)
+                            if np.random.random() < p - penalty:
+                                qty = round(q*outstanding_buy[price])
+                                assert qty >= 0, "Buy quantity negative!"
+                                if qty > 0:
+                                    mytrades.append(Trade(
+                                                        symbol=prod,
+                                                        price=price,
+                                                        quantity=qty,
+                                                        buyer="SUBMISSION",
+                                                        seller="",
+                                                        timestamp=state_previous.timestamp))
+                                    position[prod] += qty
+                        
                         for price in outstanding_sell.keys():
-                            if price < midprice:
-                                qty = int(q*outstanding_sell[price]-0.5)
-                                assert qty < 0, "Sell quantity positive!"
-                                mytrades.append(Trade(
-                                                    symbol=prod,
-                                                    price=price,
-                                                    quantity=-qty,
-                                                    buyer="",
-                                                    seller="SUBMISSION",
-                                                    timestamp=state_previous.timestamp))
-                                position[prod] += qty
+                            market_sello = list(sell_o.keys())
+                            rank = len([x for x in market_sello if x < price])
+                            if rank == 0:
+                                if np.random.random() < p:
+                                    qty = round(q*outstanding_sell[price])
+                                    assert qty <= 0, "Sell quantity positive!"
+                                    if qty < 0:
+                                        mytrades.append(Trade(
+                                                            symbol=prod,
+                                                            price=price,
+                                                            quantity=-qty,
+                                                            buyer="",
+                                                            seller="SUBMISSION",
+                                                            timestamp=state_previous.timestamp))
+                                        position[prod] += qty
+                            else:
+                                penalty = rank / len(market_sello)
+                                if np.random.random() < p - penalty:
+                                    qty = round(q*outstanding_sell[price])
+                                    assert qty <= 0, "Sell quantity positive!"
+                                    if qty < 0:
+                                        mytrades.append(Trade(
+                                                            symbol=prod,
+                                                            price=price,
+                                                            quantity=-qty,
+                                                            buyer="",
+                                                            seller="SUBMISSION",
+                                                            timestamp=state_previous.timestamp))
+                                        position[prod] += qty
                 
                 mytrades = aggregate_trades(mytrades)
 
@@ -257,20 +295,20 @@ class Exchange:
                 for i in range(1, 4):
                     bprice = "bid_price_" + str(i)
                     bvol = "bid_volume_" + str(i)
-                    if not np.isnan(listing_next[bprice].item()):
+                    if not np.isnan(listing_next[bprice].item()) and listing_next[bvol].item() > 0:
                         buy_next[listing_next[bprice].item()] = listing_next[bvol].item()
                 for i in range(1, 4):
                     aprice = "ask_price_" + str(i)
                     avol = "ask_volume_" + str(i)
-                    if not np.isnan(listing_next[aprice].item()):
+                    if not np.isnan(listing_next[aprice].item()) and listing_next[avol].item() > 0:
                         sell_next[listing_next[aprice].item()] = -listing_next[avol].item()
 
             for key in sell_o.keys():
                 if key > max(list(sell_next.keys())):
-                    sell_next[key] = sell_o[key]
+                    sell_next[key] = min(sell_o[key], -10)   # to not mess with market-making bots orders
             for key in buy_o.keys():
                 if key < min(list(buy_next.keys())):
-                    buy_next[key] = buy_o[key]
+                    buy_next[key] = max(buy_o[key], 10)     # to not mess with market-making bots orders
             order_depths[prod] = OrderDepth(
                     buy_orders=buy_next, sell_orders=sell_next)
         
@@ -303,13 +341,12 @@ class Exchange:
         algo_order = self.algo_order_start
         
         dt = list(timestamps)[1] - list(timestamps)[0]
-
-        open_buy_all = {p:[] for p in self.products}
-        open_sell_all = {p:[] for p in self.products}
-        pnls = {p:[0.] for p in self.products}
-        pnl_realised = {p:0 for p in self.products}
+        
 
         for time in timestamps:
+
+            # print("TIME: ", time)
+
             price_now = prices.loc[prices["timestamp"]==time]
             # match previous listing with previous algo order
             state = self.match(time, price_now, state, algo_order, 
@@ -318,58 +355,72 @@ class Exchange:
             
             # calculate pnls
             for prod in self.products:
-                latest_trades = state.own_trades[prod]
-
-                if len(latest_trades) == 0:
-                    pnls[prod].append(pnls[prod][-1])
-
+                pnl_unrealised = 0.
+                if len(price_now.loc[price_now["product"]==prod]["mid_price"]) == 0:
+                    # if current price unavailable, use previous price
+                    price_prev = prices.loc[prices["timestamp"]==time-dt]
+                    current_price = price_prev.loc[price_prev["product"]==prod]["mid_price"].item()
                 else:
-                    open_buy = open_buy_all[prod]
-                    open_sell = open_sell_all[prod]
-                    pnl_unrealised = 0.
-                    if len(price_now.loc[price_now["product"]==prod]["mid_price"]) == 0:
-                        price_prev = prices.loc[prices["timestamp"]==time-dt]
-                        current_price = price_prev.loc[price_prev["product"]==prod]["mid_price"].item()
-                    else:
-                        current_price = price_now.loc[price_now["product"]==prod]["mid_price"].item()
+                    current_price = price_now.loc[price_now["product"]==prod]["mid_price"].item()
 
+                latest_trades = state.own_trades[prod]
+                if len(latest_trades) == 0:
+                    # print("prod", prod , "time", time, "open buy", self.open_buy_all, "sell", self.open_sell_all)
+                    if len(self.open_buy_all[prod]) == 0 and len(self.open_sell_all[prod]) == 0:    # no open position
+                        self.pnl_total[prod].append(self.pnl_total[prod][-1])
+                    else:
+                        # Unrealised pnl
+                        if len(self.open_buy_all[prod]) == 0 and len(self.open_sell_all[prod]) != 0:
+                            open_sell = self.open_sell_all[prod]
+                            for sell in open_sell:
+                                pnl_unrealised += (sell["price"]-current_price) * sell["quantity"]
+                        elif len(self.open_sell_all[prod]) == 0 and len(self.open_buy_all[prod]) != 0:
+                            open_buy = self.open_buy_all[prod]
+                            for buy in open_buy:
+                                pnl_unrealised += (current_price-buy["price"]) * buy["quantity"]    
+
+                        self.pnl_total[prod].append(self.pnl_realised[prod] + pnl_unrealised)
+            
+                else:
+                    # print(time, "trades: ", latest_trades)
                     for trade in latest_trades:
                         if trade.buyer == "SUBMISSION":
-                            open_buy.append({
+                            self.open_buy_all[prod].append({
                                 "price": trade.price,
-                                "quantity": trade.quantity,
-                                "unrealised": current_price - trade.price
+                                "quantity": int(trade.quantity),
                             })
                         elif trade.seller == "SUBMISSION":
-                            open_sell.append({
+                            self.open_sell_all[prod].append({
                                 "price": trade.price,
-                                "quantity": trade.quantity,
-                                "unrealised": trade.price - current_price 
+                                "quantity": int(trade.quantity),
                             })
                     
                     # Realised PnL: we close the oldest positions first
-                    while len(open_buy) != 0 and len(open_sell) != 0:
-                        buy = open_buy[0]
-                        sell = open_sell[0]
-                        close_qty = min(buy["quantity"], sell["quantity"])
-                        pnl_realised[prod] += (sell["price"] - buy["price"]) * close_qty
-                        buy["quantity"] -= close_qty
-                        sell["quantity"] -= close_qty
-
-                        if buy["quantity"] == 0:
-                            open_buy = open_buy[1:]
-                        if sell["quantity"] == 0:
-                            open_sell = open_sell[1:]
+                    while len(self.open_buy_all[prod]) != 0 and len(self.open_sell_all[prod]) != 0:
+                        buy = self.open_buy_all[prod][0]
+                        sell = self.open_sell_all[prod][0]
+                        close_qty = int(min(buy["quantity"], sell["quantity"]))
+                        self.pnl_realised[prod] += (sell["price"] - buy["price"]) * close_qty
+                        self.open_buy_all[prod][0]["quantity"] -= close_qty
+                        self.open_sell_all[prod][0]["quantity"] -= close_qty
+                        if close_qty == buy["quantity"]:
+                            self.open_buy_all[prod].pop(0)
+                        if close_qty == sell["quantity"]:
+                            self.open_sell_all[prod].pop(0)
+                    
+                    # print("prod", prod , "time", time, "open buy", self.open_buy_all, "sell", self.open_sell_all)
                     
                     # Unrealised pnl
-                    if len(open_buy) == 0 and len(open_sell) != 0:
+                    if len(self.open_buy_all[prod]) == 0 and len(self.open_sell_all[prod]) != 0:
+                        open_sell = self.open_sell_all[prod]
                         for sell in open_sell:
-                            pnl_unrealised += sell["unrealised"] * sell["quantity"]
-                    elif len(open_sell) == 0 and len(open_buy) != 0:
+                            pnl_unrealised += (sell["price"]-current_price) * sell["quantity"]
+                    elif len(self.open_sell_all[prod]) == 0 and len(self.open_buy_all[prod]) != 0:
+                        open_buy = self.open_buy_all[prod]
                         for buy in open_buy:
-                            pnl_unrealised += buy["unrealised"] * buy["quantity"]    
+                            pnl_unrealised += (current_price-buy["price"]) * buy["quantity"]    
 
-                    pnls[prod].append(pnl_realised[prod] + pnl_unrealised)
+                    self.pnl_total[prod].append(self.pnl_realised[prod] + pnl_unrealised)
 
             # run trading algorithm
             if testing[0] == True:
@@ -398,7 +449,7 @@ class Exchange:
                         self.trade_hist[prod] += latest_trades
         
         for prod in self.products:
-            pnls[prod] = pnls[prod][1:]
+            self.pnl_total[prod] = self.pnl_total[prod][1:]
 
-        return pnls
+        return self.pnl_total
 
