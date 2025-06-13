@@ -6,7 +6,7 @@ import numpy as np
 import json
 
 
-PRODUCTS = ["RAINFOREST_RESIN", "KELP"]
+PRODUCTS = ["AMETHYSTS", "STARFRUIT"]
 
 
 class Trader:
@@ -14,14 +14,14 @@ class Trader:
 
         print("Trader initialised!")
 
-        self.POS_LIM = {"RAINFOREST_RESIN": 50, "KELP": 50}
-        self.prods = ["RAINFOREST_RESIN", "KELP"]
+        self.POS_LIM = {"AMETHYSTS": 20, "STARFRUIT": 20}
+        self.prods = ["AMETHYSTS", "STARFRUIT"]
         self.positions_correct = False
 
 
     def order_resin(self, state: TradingState):
         orders: list[Order] = []
-        prod = "RAINFOREST_RESIN"
+        prod = "AMETHYSTS"
         pos_lim = self.POS_LIM[prod]
         # free parameters
         fairprice = 10000
@@ -76,7 +76,7 @@ class Trader:
 
     def order_kelp(self, state: TradingState):
         orders: list[Order] = []
-        prod = "KELP"
+        prod = "STARFRUIT"
         order_depth = state.order_depths[prod]
         pos_lim = self.POS_LIM[prod]
 
@@ -154,8 +154,8 @@ class Trader:
 
         # debug mode
         if state.timestamp < 1e10:
-            result["RAINFOREST_RESIN"] = self.order_resin(state)
-            result["KELP"] = self.order_kelp(state)
+            result["AMETHYSTS"] = self.order_resin(state)
+            result["STARFRUIT"] = self.order_kelp(state)
         # print("algo orders: ", result)
 
         traderData = "SAMPLE"

@@ -8,14 +8,12 @@ np.random.seed(42)
 
 Symbol = str
 
-# PRODUCTS = ["STARFRUIT", "AMETHYSTS", "ORCHIDS", 
-#             "CHOCOLATE", "STRAWBERRIES", "ROSES", 
-#             "GIFT_BASKET", "COCONUT", "COCONUT_COUPON"]
+PRODUCTS = ["STARFRUIT", "AMETHYSTS", "ORCHIDS", 
+            "CHOCOLATE", "STRAWBERRIES", "ROSES", 
+            "GIFT_BASKET", "COCONUT", "COCONUT_COUPON"]
 
-PRODUCTS = ["RAINFOREST_RESIN", "KELP"]
-
-POS_LIM = {PRODUCTS[0]: 50,
-        PRODUCTS[1]: 50,
+POS_LIM = {PRODUCTS[0]: 20,
+        PRODUCTS[1]: 20,
         "ORCHIDS": 100,
         "CHOCOLATE": 250,
         "STRAWBERRIES": 350,
